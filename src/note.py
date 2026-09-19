@@ -118,7 +118,14 @@ def main() -> None:
     p.add_argument("--file", type=Path, default=APP / "remarks.csv")
     p.add_argument("--names", type=Path, default=APP / "names.json")
     p.add_argument("--tz", help="time zone, e.g. Europe/Amsterdam (default: the system's)")
-    args = p.parse_args()
+    # "--at -20m": argparse would take -20m for an option, so glue it on as --at=-20m
+    argv, fixed = sys.argv[1:], []
+    while argv:
+        a = argv.pop(0)
+        if a == "--at" and argv and argv[0].startswith("-"):
+            a = f"--at={argv.pop(0)}"
+        fixed.append(a)
+    args = p.parse_args(fixed)
 
     tz = local_zone(args.tz)
     names = load_names(args.names)
