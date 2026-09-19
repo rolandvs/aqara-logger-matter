@@ -370,8 +370,36 @@ async def commission(url: str, code: str) -> None:
             return
 
 
-async def dump(url: str, names: str | None = None) -> None:
-    """Print everything the bridge exposes per sensor: all identifying fields and readings."""
+# The hub's own health, if it publishes it (standard Matter clusters on the hub node).
+# Matter has no cluster for the radio link of a device *behind* a bridge, so per-sensor
+# RSSI/LQI can only appear in an Aqara-specific (vendor) cluster, shown raw below.
+HUB_DIAG = {
+    40: ("Basic information", {1: "vendor", 3: "product", 10: "firmware", 15: "serial"}),
+    51: ("General diagnostics", {1: "reboot count", 2: "uptime", 3: "operating hours",
+                                 4: "last boot reason"}),
+    54: ("Wi-Fi diagnostics", {3: "channel", 4: "RSSI (dBm)", 5: "beacons lost",
+                               11: "max rate (bit/s)", 12: "overruns"}),
+}
+BOOT_REASONS = {0: "unspecified", 1: "power on", 2: "brown-out", 3: "software watchdog",
+                4: "hardware watchdog", 5: "software update", 6: "software reset"}
+
+
+def hub_value(cluster: int, attr: int, v: object) -> str:
+    if v is None:
+        return "-"
+    if (cluster, attr) == (51, 2) and isinstance(v, (int, float)):
+        return f"{v / 86400:.1f} days"
+    if (cluster, attr) == (51, 4):
+        return BOOT_REASONS.get(v, str(v))
+    if (cluster, attr) == (54, 4) and isinstance(v, (int, float)):
+        grade = "good" if v > -60 else "fair" if v > -70 else "weak"
+        return f"{v} ({grade})"
+    return repr(v)
+
+
+async def dump(url: str, names: str | None = None, show_all: bool = False) -> None:
+    """Print everything the bridge exposes: the hub's own health, then per sensor all
+    identifying fields, readings, and any vendor-specific data. --all: every raw value."""
     async with websockets.connect(url, max_size=None) as ws:
         await ws.send(json.dumps({"message_id": "listen", "command": "start_listening"}))
         async for raw in ws:
@@ -389,11 +417,22 @@ async def dump(url: str, names: str | None = None) -> None:
                 endpoints = sorted({parse_path(p)[0] for p in attrs})
                 print(f"\n=== node {node['node_id']}  available={node.get('available')}  "
                       f"endpoints={len(endpoints)}  bridged devices={len(info)}")
+                print("\n  hub (endpoint 0):")
+                shown = False
+                for cl, (title, fields) in HUB_DIAG.items():
+                    got = [(a, attrs[f"0/{cl}/{a}"]) for a in fields if f"0/{cl}/{a}" in attrs]
+                    if got:
+                        shown = True
+                        print(f"    {title}: " + ", ".join(
+                            f"{fields[a]} {hub_value(cl, a, v)}" for a, v in got))
+                if not shown:
+                    print("    publishes no diagnostics")
                 for ep in endpoints:
                     clusters = sorted({parse_path(p)[1] for p in attrs if parse_path(p)[0] == ep})
                     owner_ep = owner.get(ep)
                     tag = "" if owner_ep in (None, ep) else f"  (part of ep {owner_ep})"
-                    print(f"\n  ep {ep:<3} clusters {clusters}{tag}")
+                    shown_cl = ", ".join(str(c) if c <= 0xFFFF else f"0x{c:08X}" for c in clusters)
+                    print(f"\n  ep {ep:<3} clusters [{shown_cl}]{tag}")
                     for at in sorted(BRIDGED_ATTRS):      # all identifying fields
                         path = f"{ep}/{BRIDGED_INFO}/{at}"
                         if path in attrs:
@@ -404,6 +443,16 @@ async def dump(url: str, names: str | None = None) -> None:
                             v = attrs[path]
                             print(f"      {column:<20} = "
                                   f"{'None' if v is None else round(v * scale, 2)}")
+                    for path in sorted(attrs, key=lambda p: parse_path(p)):
+                        e, cl, at = parse_path(path)
+                        if e != ep:
+                            continue
+                        if cl > 0xFFFF:                   # vendor-specific (e.g. Aqara)
+                            print(f"      vendor 0x{cl:08X} attr {at:<5} = {attrs[path]!r}")
+                        elif show_all:
+                            print(f"      cluster {cl:<6} attr {at:<5} = {attrs[path]!r}")
+                vendor = sorted({hex(parse_path(p)[1]) for p in attrs if parse_path(p)[1] > 0xFFFF})
+                print(f"\n  vendor-specific clusters on this node: {', '.join(vendor) or 'none'}")
                 print("\n--- sensors the logger records ---")
                 for name, (sid, vals) in logger.readings(node["node_id"]).items():
                     print(f"  {name!r}  id={sid}  {vals}")
@@ -473,7 +522,9 @@ def main() -> None:
                         "created and extended automatically, re-read while running")
     p.add_argument("--commission", metavar="CODE", help="pairing code from Aqara Home, then exit")
     p.add_argument("--dump", action="store_true",
-                   help="print all bridged endpoints and exit (diagnostics)")
+                   help="print the hub's diagnostics and all bridged endpoints, then exit")
+    p.add_argument("--all", action="store_true",
+                   help="with --dump: also every raw attribute of every cluster")
     p.add_argument("--watch", action="store_true",
                    help="print every incoming sensor report live (diagnostics)")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -485,7 +536,7 @@ def main() -> None:
         if args.commission:
             asyncio.run(commission(args.url, args.commission))
         elif args.dump:
-            asyncio.run(dump(args.url, args.names))
+            asyncio.run(dump(args.url, args.names, args.all))
         elif args.watch:
             asyncio.run(watch(args.url, args.names))
         else:
