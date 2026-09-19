@@ -45,8 +45,21 @@ Optional: for an always-on screen, `sudo raspi-config` → Display Options → S
 ## Use
 
 **Screen.** Per sensor: temperature, humidity, battery, time of its last report.
-Grey value: no report for 3 hours, or the hub says the sensor is unreachable.
+A T1 checks in every 55 minutes even when nothing changes, so:
+orange `late` = one check-in missed; grey value and `silent` = two missed;
+`offline` = the hub says it cannot reach the sensor.
 Orange status bar: the logger stopped writing. `*`: calibrated value.
+
+**Health.** Are all sensors working, and how solid is each radio link?
+```
+aqara-health                  # last 24 hours
+aqara-health --hours 168      # last week
+```
+Per sensor: last report, status, reports, missed check-ins, longest silence, battery range.
+Missed check-ins are the measure of a sensor's radio link: Matter passes on no signal
+strength (RSSI) for sensors behind a bridge. None is solid, a few is marginal, many is weak.
+Time the logger was down, or when all sensors were quiet at once (the hub, not the
+sensors), is not held against a sensor.
 
 **Remarks.** Time-stamped notes, used to select data later.
 Each remark starts a phase that lasts until the next remark.
@@ -78,15 +91,16 @@ From then on the exports and the screen apply the corrections. The log itself st
 `aqara-export --raw` exports without them. Offsets smaller than their own spread are
 treated as noise and not corrected.
 
-All options: `aqara-export -h`, `aqara-note -h`.
+All options: `aqara-export -h`, `aqara-note -h`, `aqara-health -h`.
 
 ## Reading the data
 
-- A T1 reports only on change: about 0.5 °C, and larger steps for humidity.
-  No new report means no change, not a fault.
+- A T1 reports on change (about 0.5 °C; larger steps for humidity), and otherwise
+  checks in every 55 minutes. Silence longer than an hour means something is wrong.
 - In `sensor_log.csv`, `update` rows are real reports. `start` and `interval` rows
   (every 5 minutes) repeat the last known values.
-- Battery % drops in the cold and recovers when warm. The mV column is a fixed 3000.
+- Battery % is an estimate. It drops in the cold, and a weak cell shows short dips
+  toward zero while the radio transmits: replace it. The mV column is a fixed 3000.
 - Calibration makes the sensors agree with each other, not with the true value.
   That needs an outside reference, such as ice water at 0 °C.
 
@@ -109,7 +123,9 @@ Back up `/opt/aqara/app/` now and then. The log is the one thing you can't recre
 
 | Symptom | Check |
 |---|---|
+| Is everything working? | `aqara-health` |
 | A sensor is missing | Enabled under Expose to Matter in Aqara Home? `sudo aqara-logger --dump` lists what the hub sends |
+| Is the hub itself healthy? | `sudo aqara-logger --dump` starts with the hub's uptime, reboots and Wi-Fi signal, if it publishes them. `--dump --all` shows every raw value |
 | Values never change | `sudo aqara-logger --watch` shows every report live, and which sensor it goes to |
 | Pairing times out | Pi and hub on the same network, no guest Wi-Fi or VLAN between them, IPv6 on |
 | Orange "… min old!" on the screen | `sudo docker compose -f /opt/aqara/compose.yaml ps`: is the logger running? |
