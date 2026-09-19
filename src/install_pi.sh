@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # 32-bit Pi OS can still report an aarch64 kernel, so check the userland architecture
 [ "$(dpkg --print-architecture)" = "arm64" ] || {
   echo "Needs 64-bit Raspberry Pi OS (matter server image is arm64/amd64 only)"; exit 1; }
-for f in install.sh aqara_logger.py dashboard.py note.py export.py; do
+for f in install.sh aqara_logger.py dashboard.py note.py export.py health.py; do
   [ -f "$HERE/$f" ] || { echo "$f not found next to install_pi.sh"; exit 1; }
 done
 

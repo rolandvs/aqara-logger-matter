@@ -68,8 +68,9 @@ exec docker compose -f /opt/aqara/compose.yaml run --rm logger sh -c \
 EOF
 chmod +x /usr/local/bin/aqara-logger
 
-# optional tools: remarks (aqara-note) and chart exports (aqara-export), host Python only
-for tool in note export; do
+# tools: remarks (aqara-note), chart exports (aqara-export), sensor health (aqara-health);
+# host Python only, no Docker needed
+for tool in note export health; do
   [ -f "$HERE/$tool.py" ] || continue
   install -m 755 "$HERE/$tool.py" "$BASE/app/$tool.py"
   printf '#!/usr/bin/env bash\nexec python3 %s/app/%s.py "$@"\n' "$BASE" "$tool" \
@@ -93,4 +94,5 @@ echo "  Live log  : sudo aqara-logger --watch"
 echo "  CSV       : $BASE/app/sensor_log.csv"
 [ -x /usr/local/bin/aqara-note ] && echo "  Remark    : aqara-note \"moved 3 to the bedroom\"   (aqara-note -h)"
 [ -x /usr/local/bin/aqara-export ] && echo "  Chart CSV : aqara-export   /   aqara-export overlay   (aqara-export -h)"
+[ -x /usr/local/bin/aqara-health ] && echo "  Health    : aqara-health   (are all sensors checking in?)"
 true
