@@ -13,7 +13,7 @@ of its radio link: Matter carries no signal strength (RSSI/LQI) for sensors behi
 bridge, so this is the closest thing available.
 
 Not held against a sensor:
-  - time the logger itself was not running (no log rows at all), and
+  - time the logger itself was not running or restarting, and
   - time ALL sensors were silent together: that points at the hub or the network.
 
 Status now:
@@ -29,6 +29,7 @@ isolated miss is not yet a fault; a pattern of misses is.
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import json
 import math
@@ -100,6 +101,7 @@ def main() -> None:
     battery: dict[str, list[tuple[float, float]]] = {}
     names: dict[str, str] = {}
     all_rows: list[float] = []
+    starts: set[float] = set()                    # logger (re)starts
     try:
         f = args.log.open(encoding="utf-8", newline="")
     except FileNotFoundError:
@@ -121,6 +123,8 @@ def main() -> None:
             names[key] = row.get("sensor") or key
             if row.get("trigger") == "update":
                 reports.setdefault(key, []).append(ts)
+            elif row.get("trigger") == "start":
+                starts.add(ts)
             try:
                 battery.setdefault(key, []).append((ts, float(row["battery_pct"])))
             except (KeyError, TypeError, ValueError):
@@ -153,6 +157,13 @@ def main() -> None:
 
     # ---- when was the logger down, and when were all sensors quiet together?
     down = gaps_over(all_rows, LOGGER_GAP)
+    # A restart is a short outage too: a check-in arriving while the logger restarts is
+    # not logged as a report (its values only show up in the "start" snapshot). The
+    # logger was not listening at some point between its last row and the restart.
+    for s in sorted(starts):
+        i = bisect.bisect_left(all_rows, s)
+        if i > 0 and all_rows[i - 1] < s:
+            down.append((all_rows[i - 1], s))
     logger_age = now - all_rows[-1]
     logger_down_now = logger_age > LOGGER_GAP
     if logger_down_now:
@@ -207,8 +218,10 @@ def main() -> None:
                             f"sits in a metal box or fridge.")
         elif status == "LATE":
             problems.append(f"{n}: one check-in overdue. Wait for the next one before worrying.")
-        if missed and status in ("ok", "LATE"):
-            problems.append(f"{n}: {missed} missed check-in(s) in the window. A few means a "
+        # One isolated miss can be a check-in with unchanged values, which Matter does not
+        # pass on. Only a pattern says something about the radio link.
+        if missed >= 2 and status in ("ok", "LATE"):
+            problems.append(f"{n}: {missed} missed check-ins in the window. A few means a "
                             f"marginal radio link (distance, walls, metal); many means a weak one.")
         if bats and min(bats) <= 10:
             problems.append(f"{n}: battery reading dropped to {min(bats):.0f}%. Dips toward zero "
@@ -230,8 +243,8 @@ def main() -> None:
     print()
     outside = [(a, b) for a, b in down if b > start and not (logger_down_now and b == now)]
     if outside:
-        print(f"Logger not running: {len(outside)}x, {ago(sum(b - max(a, start) for a, b in outside))} "
-              f"in total (not held against the sensors)")
+        print(f"Logger stopped or restarting: {len(outside)}x, "
+              f"{ago(sum(b - max(a, start) for a, b in outside))} in total (not held against the sensors)")
     if hub_quiet:
         print(f"All sensors silent together: {len(hub_quiet)}x, "
               f"{ago(sum(b - max(a, start) for a, b in hub_quiet))} in total. That is the hub, "
