@@ -67,6 +67,8 @@ class Dashboard:
         self.corr_error = ""
         self._corr_mtime: float | None = None
         self.names: list[str] | None = None
+        self.built_size: tuple[int, int] | None = None
+        self._shown: dict[str, dict] = {}              # label -> options last drawn
         self.cards: dict[str, dict[str, tk.Label]] = {}
         root.configure(bg=BG)
         self.status = tk.Label(root, bg=BG, fg=DIM, anchor="e", padx=10)
@@ -80,6 +82,25 @@ class Dashboard:
             return json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
+
+    def on_configure(self, event: tk.Event) -> None:
+        """Rebuild the tiles only when the window really changed size.
+
+        X11 also sends Configure when a label's new text changes its width, at the
+        same window size; rebuilding on those made every refresh blink."""
+        if event.widget is not self.root or self.built_size is None:
+            return
+        if (event.width, event.height) != self.built_size and event.width > 1:
+            self.names = None
+
+    def put(self, lbl: tk.Label, **opts) -> None:
+        """Configure a label only with what actually changed: every configure makes Tk
+        redraw the label (and a remote desktop resend it), even with identical text."""
+        shown = self._shown.setdefault(str(lbl), {})
+        changed = {k: v for k, v in opts.items() if shown.get(k) != v}
+        if changed:
+            lbl.configure(**changed)
+            shown.update(changed)
 
     def load_corrections(self) -> None:
         """Same file and fields as aqara-export; re-read only when it changed."""
@@ -112,9 +133,12 @@ class Dashboard:
         for child in self.grid.winfo_children():
             child.destroy()
         self.cards.clear()
+        self._shown.clear()
         self.names = names
         n = max(len(names), 1)
         w, h = self.root.winfo_width(), self.root.winfo_height()
+        self.built_size = (w, h)
+        self.grid.grid_propagate(False)                 # text changes must not resize anything
         cols = 1 if n == 1 else (2 if h > w or n <= 4 else 3)
         rows = math.ceil(n / cols)
         cell_w, cell_h = w / cols, (h - 30) / rows
@@ -132,6 +156,7 @@ class Dashboard:
         for i, name in enumerate(names):
             card = tk.Frame(self.grid, bg=CARD)
             card.grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
+            card.pack_propagate(False)
             short = short_name(name)
             labels = {
                 "name": tk.Label(card, text=short, bg=CARD, fg=DIM,
@@ -150,11 +175,11 @@ class Dashboard:
             if not data or not data.get("sensors"):
                 if self.names != []:
                     self.build([])
-                self.status.configure(text=f"Waiting for data: {self.path}", fg=WARN)
+                self.put(self.status, text=f"Waiting for data: {self.path}", fg=WARN)
                 return
             sensors = data["sensors"]
             names = sorted(sensors, key=sort_key)
-            if names != self.names:
+            if names != self.names:                    # other sensors, or a real resize
                 self.build(names)
             # The logger rewrites the whole file on every report and at least once per
             # --interval. An old file means the logger stopped or is not writing it, so
@@ -184,9 +209,9 @@ class Dashboard:
                 late = quiet > HEARTBEAT_S + TOL_S
                 silent = quiet > 2 * HEARTBEAT_S + TOL_S
                 stale = offline or frozen or silent
-                lbl["temp"].configure(text="--" if t is None else f"{t:.1f}\u00b0{mark_t}",
-                                      fg=STALE if stale else FG)
-                lbl["hum"].configure(text="--" if hum is None else f"{hum:.1f} % RH{mark_h}")
+                self.put(lbl["temp"], text="--" if t is None else f"{t:.1f}\u00b0{mark_t}",
+                         fg=STALE if stale else FG)
+                self.put(lbl["hum"], text="--" if hum is None else f"{hum:.1f} % RH{mark_h}")
                 if offline:
                     foot = "offline"
                 elif late:
@@ -198,16 +223,16 @@ class Dashboard:
                 if bat is not None:
                     foot = f"bat {bat:.0f}%   {foot}"
                 warn = offline or late or (bat is not None and bat < 20)
-                lbl["foot"].configure(text=foot, fg=WARN if warn else DIM)
+                self.put(lbl["foot"], text=foot, fg=WARN if warn else DIM)
             age = ("" if file_age < 120 else
                    f" ({file_age / 60:.0f} min old!)" if file_age < 5400 else
                    f" ({file_age / 3600:.0f} h old!)")
             corr_note = (f"   {self.corr_error}" if self.corr_error else
                          "   * corrected" if any_corrected else "")
-            self.status.configure(
-                text=f"{len(names)} sensors{corr_note}   {datetime.now():%H:%M}   "
-                     f"data {local_hm(data.get('generated_utc'))}{age}",
-                fg=WARN if frozen or self.corr_error else DIM)
+            self.put(self.status,
+                     text=f"{len(names)} sensors{corr_note}   {datetime.now():%H:%M}   "
+                          f"data {local_hm(data.get('generated_utc'))}{age}",
+                     fg=WARN if frozen or self.corr_error else DIM)
         finally:
             self.root.after(REFRESH_MS, self.refresh)
 
@@ -226,12 +251,16 @@ def main() -> None:
     if args.windowed:
         root.geometry(args.windowed)
     else:
+        # an explicit screen-sized geometry as well: without it, a desktop that ignores
+        # the fullscreen request lets the window follow its contents and resize
+        root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}+0+0")
         root.attributes("-fullscreen", True)
         root.configure(cursor="none")
+    root.pack_propagate(False)                         # the contents never size the window
     root.bind("<Escape>", lambda _e: root.destroy())
-    root.bind("<Configure>", lambda e: dash.__setattr__("names", None) if e.widget is root else None)
     dash = Dashboard(root, Path(args.path),
                      Path(args.corrections) if args.corrections else None)
+    root.bind("<Configure>", dash.on_configure)
     root.mainloop()
 
 
