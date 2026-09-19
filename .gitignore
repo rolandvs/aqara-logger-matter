@@ -1,6 +1,7 @@
 # Apple
 .DS_Store
-
+# directory tht is indeed lost & found
+lost&found/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
