@@ -63,6 +63,7 @@ class Dashboard:
         self.corr_error = ""
         self._corr_mtime: float | None = None
         self.names: list[str] | None = None
+        self.size = (0, 0)              # last geometry we built for; see on_resize in main()
         self.cards: dict[str, dict[str, tk.Label]] = {}
         root.configure(bg=BG)
         self.status = tk.Label(root, bg=BG, fg=DIM, anchor="e", padx=10)
@@ -70,6 +71,19 @@ class Dashboard:
         self.grid = tk.Frame(root, bg=BG)
         self.grid.pack(side="top", fill="both", expand=True)
         root.after(300, self.refresh)   # let fullscreen geometry settle first
+
+    @staticmethod
+    def put(lbl: tk.Label, **kw) -> None:
+        """Configure only the options that actually differ.
+
+        Tk on X11 has no double buffering: every configure() clears the widget
+        and redraws it, even when nothing changed. At one refresh every 5 s that
+        is a visible flash on each tile, so skip the call when the value is the
+        same as what is already on screen.
+        """
+        changed = {k: v for k, v in kw.items() if lbl.cget(k) != v}
+        if changed:
+            lbl.configure(**changed)
 
     def load(self) -> dict | None:
         try:
@@ -129,12 +143,17 @@ class Dashboard:
             card = tk.Frame(self.grid, bg=CARD)
             card.grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
             short = short_name(name)
+            # Fixed widths (in text units, so they scale with the font): without them
+            # "--" -> "21.3°" resizes the label and pack() shifts the whole card,
+            # repainting every tile instead of the one value that changed.
+            # Each width is the longest text that label can show ("-12.5°*",
+            # "100.0 % RH*", "bat 100%   offline"), so nothing needs more room than before.
             labels = {
                 "name": tk.Label(card, text=short, bg=CARD, fg=DIM,
                                  font=("DejaVu Sans", name_px(short))),
-                "temp": tk.Label(card, bg=CARD, fg=FG, font=f_temp),
-                "hum":  tk.Label(card, bg=CARD, fg=FG, font=f_sub),
-                "foot": tk.Label(card, bg=CARD, fg=DIM, font=f_sub),
+                "temp": tk.Label(card, bg=CARD, fg=FG, font=f_temp, width=7),
+                "hum":  tk.Label(card, bg=CARD, fg=FG, font=f_sub, width=11),
+                "foot": tk.Label(card, bg=CARD, fg=DIM, font=f_sub, width=18),
             }
             for lbl in labels.values():
                 lbl.pack(expand=True)
@@ -146,7 +165,7 @@ class Dashboard:
             if not data or not data.get("sensors"):
                 if self.names != []:
                     self.build([])
-                self.status.configure(text=f"Waiting for data: {self.path}", fg=WARN)
+                self.put(self.status, text=f"Waiting for data: {self.path}", fg=WARN)
                 return
             sensors = data["sensors"]
             names = sorted(sensors, key=sort_key)
@@ -178,19 +197,21 @@ class Dashboard:
                 # started - the value is the hub's current one, so do not grey it out.
                 stale = (offline or frozen
                          or (reported is not None and age_s(reported) > STALE_S))
-                lbl["temp"].configure(text="--" if t is None else f"{t:.1f}\u00b0{mark_t}",
-                                      fg=STALE if stale else FG)
-                lbl["hum"].configure(text="--" if hum is None else f"{hum:.1f} % RH{mark_h}")
+                self.put(lbl["temp"], text="--" if t is None else f"{t:.1f}\u00b0{mark_t}",
+                         fg=STALE if stale else FG)
+                self.put(lbl["hum"], text="--" if hum is None else f"{hum:.1f} % RH{mark_h}")
                 foot = "offline" if offline else (local_hm(reported) if reported else "\u2014")
                 if bat is not None:
                     foot = f"bat {bat:.0f}%   {foot}"
-                lbl["foot"].configure(text=foot, fg=WARN if bat is not None and bat < 20 else DIM)
+                self.put(lbl["foot"], text=foot,
+                         fg=WARN if bat is not None and bat < 20 else DIM)
             age = ("" if file_age < 120 else
                    f" ({file_age / 60:.0f} min old!)" if file_age < 5400 else
                    f" ({file_age / 3600:.0f} h old!)")
             corr_note = (f"   {self.corr_error}" if self.corr_error else
                          "   * corrected" if any_corrected else "")
-            self.status.configure(
+            self.put(
+                self.status,
                 text=f"{len(names)} sensors{corr_note}   {datetime.now():%H:%M}   "
                      f"data {local_hm(data.get('generated_utc'))}{age}",
                 fg=WARN if frozen or self.corr_error else DIM)
@@ -215,9 +236,20 @@ def main() -> None:
         root.attributes("-fullscreen", True)
         root.configure(cursor="none")
     root.bind("<Escape>", lambda _e: root.destroy())
-    root.bind("<Configure>", lambda e: dash.__setattr__("names", None) if e.widget is root else None)
     dash = Dashboard(root, Path(args.path),
                      Path(args.corrections) if args.corrections else None)
+
+    def on_resize(e: tk.Event) -> None:
+        """Rebuild only on a real size change.
+
+        <Configure> also fires on moves and restacks, and build() destroys and
+        recreates every widget - the most visible flash of all.
+        """
+        if e.widget is root and (e.width, e.height) != dash.size:
+            dash.size = (e.width, e.height)
+            dash.names = None       # force a rebuild at the new geometry
+
+    root.bind("<Configure>", on_resize)
     root.mainloop()
 
 
